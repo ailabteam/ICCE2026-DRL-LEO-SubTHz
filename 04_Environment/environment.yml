@@ -1,0 +1,18 @@
+name: icce_drl
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - matplotlib
+  - pytorch::pytorch=2.5.1  # Đồng bộ với phiên bản bạn đang có
+  - pytorch::torchvision
+  - pytorch::torchaudio
+  - pip:
+    - gymnasium[box2d]       # Môi trường DRL cơ bản
+    - stable-baselines3[extra] # Thư viện DRL mạnh mẽ
+    - torchinfo              # Để kiểm tra kiến trúc mạng
