@@ -3,6 +3,7 @@
 import os
 import time
 import numpy as np
+import torch # <<< DÒNG THÊM VÀO
 from stable_baselines3 import SAC
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -29,14 +30,12 @@ def train_sac_agent():
     print(f"Bắt đầu huấn luyện SAC trên thiết bị: {DEVICE}")
     
     # 1. Tạo môi trường Vectorized (song song)
-    # Sử dụng SubprocVecEnv để tăng tốc độ thu thập dữ liệu trên CPU đa lõi
     env = make_vec_env(LEODRL150GHzEnv, n_envs=N_ENVS, seed=0)
     
     # Thiết lập Logger SB3
     new_logger = configure(LOG_DIR, ["stdout", "csv", "tensorboard"])
 
     # 2. Định nghĩa Kiến trúc Mạng Nơ-ron (Policy)
-    # SAC sử dụng MLP (Mô hình Mạng Đa Tầng)
     policy_kwargs = dict(
         net_arch=[dict(pi=[256, 256], qf=[256, 256])] # Hai lớp ẩn 256 cho Actor (pi) và Critic (qf)
     )
@@ -79,6 +78,10 @@ def train_sac_agent():
         )
     except Exception as e:
         print(f"Lỗi xảy ra trong quá trình huấn luyện: {e}")
+        # In traceback chi tiết nếu lỗi không phải là lỗi KeyboardInterrupt
+        if not isinstance(e, KeyboardInterrupt):
+             import traceback
+             traceback.print_exc()
     finally:
         # Lưu mô hình cuối cùng
         model.save(os.path.join(CHECKPOINT_DIR, "final_model.zip"))
@@ -87,5 +90,4 @@ def train_sac_agent():
 
 
 if __name__ == "__main__":
-    import torch
     train_sac_agent()
