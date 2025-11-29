@@ -4,28 +4,23 @@ import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 from .constants import *
-from .channel_model import calculate_channel_gain
+from .channel_model import calculate_channel_gain, calculate_path_loss 
 from .system_utils import initialize_ue_positions, calculate_sat_position, get_los_vectors
 
 class LEODRL150GHzEnv(gym.Env):
-    """
-    Môi trường DRL cho Quản lý Beam và Tài nguyên trong Mạng LEO Sub-THz.
-    Action Space: [Power Fraction, Beam Dir X, Beam Dir Y, Beam Dir Z]
-    """
-    
+# ... (Phần __init__, _get_obs, reset giữ nguyên) ...
+
     def __init__(self):
         super(LEODRL150GHzEnv, self).__init__()
 
-        # ACTION SPACE: [Power Fraction (0-1), Beam Dir Vector X (-1-1), Y, Z]
-        # Kích thước: 1 (Power) + 3 (Beam Vector) = 4
+        # --- ĐỊNH NGHĨA ACTION SPACE (1 chiều) ---
         self.action_space = spaces.Box(
-            low=np.array([0.0, -1.0, -1.0, -1.0], dtype=np.float32), 
-            high=np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32), 
+            low=np.array([0.0], dtype=np.float32), 
+            high=np.array([1.0], dtype=np.float32), 
             dtype=np.float32
         )
         
-        # OBSERVATION SPACE: [LOS vectors (NUM_UE * 3), Estimated Path Losses (NUM_UE)]
-        # Kích thước: (NUM_UE * 3) + NUM_UE
+        # --- ĐỊNH NGHĨA OBSERVATION SPACE ---
         obs_size = NUM_UE * 3 + NUM_UE
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_size,), dtype=np.float32
@@ -34,19 +29,19 @@ class LEODRL150GHzEnv(gym.Env):
         self.time_step = 0
         self.ue_positions = initialize_ue_positions() 
         self.sat_pos = calculate_sat_position(0)
+        
+        self.PL_MIN_DB = 170.0 
+        self.PL_RANGE_DB = 25.0 
 
     def _get_obs(self, sat_pos):
-        """Tính toán trạng thái quan sát (Observation)"""
-        
         los_normalized, distances = get_los_vectors(sat_pos, self.ue_positions)
+        raw_pl = np.array([calculate_path_loss(d) for d in distances])
+        pl_db = 10 * np.log10(raw_pl)
+        normalized_pl = np.clip((pl_db - self.PL_MIN_DB) / self.PL_RANGE_DB, 0.0, 1.0)
         
-        # Để đơn giản, Estimated Path Losses chỉ là giá trị Path Loss (linear)
-        estimated_pl = np.array([calculate_path_loss(d) for d in distances])
-        
-        # Trạng thái: [LOS vectors, Path Losses]
         obs = np.concatenate([
             los_normalized.flatten(), 
-            estimated_pl 
+            normalized_pl 
         ]).astype(np.float32)
         
         return obs
@@ -55,7 +50,6 @@ class LEODRL150GHzEnv(gym.Env):
         super().reset(seed=seed)
         
         self.time_step = 0
-        # Reset UE positions và tính vị trí vệ tinh ban đầu
         self.ue_positions = initialize_ue_positions() 
         self.sat_pos = calculate_sat_position(self.time_step)
         
@@ -63,60 +57,60 @@ class LEODRL150GHzEnv(gym.Env):
         info = {}
         return observation, info
 
+
     def step(self, action):
         
-        # 1. Giải mã Hành động
         power_fraction = np.clip(action[0], 0.0, 1.0)
         total_tx_power = power_fraction * MAX_SAT_TX_POWER_LINEAR 
         
-        # Chuẩn hóa Beam Direction (đảm bảo là vector đơn vị)
-        beam_direction = action[1:4]
-        norm = np.linalg.norm(beam_direction)
-        beam_direction_norm = beam_direction / (norm + 1e-9)
+        los_normalized, dists = get_los_vectors(self.sat_pos, self.ue_positions)
+        
+        # 2. Cố định Beam Direction (Hướng vào LOS trung bình)
+        beam_direction_norm = np.mean(los_normalized, axis=0) 
+        beam_direction_norm = beam_direction_norm / (np.linalg.norm(beam_direction_norm) + 1e-9)
 
-        # 2. Cập nhật vị trí (Mobility)
         self.time_step += 1 
         self.sat_pos = calculate_sat_position(self.time_step)
         
-        # 3. Tính toán SINR và Throughput
-        
-        # Giả định phân bổ công suất đồng đều cho tất cả NUM_UE
         power_per_ue = total_tx_power / NUM_UE 
 
         total_rate = 0.0
-        penalty = 0.0
+        qos_violations = 0.0
+        
+        sinr_dbs = []
         
         for i in range(NUM_UE):
             ue_pos = self.ue_positions[i]
             
-            # Channel Gain (H^2)
+            # Tính Channel Gain (H^2)
+            # H_sq = G_total / PL
             H_sq = calculate_channel_gain(self.sat_pos, ue_pos, beam_direction_norm)
-
-            # SINR calculation (Giả định nhiễu xuyên kênh = 0 cho bản đầu tiên)
-            # SINR_i = (Power * H^2) / Noise Power
-            SINR_i = (power_per_ue * H_sq) / NOISE_POWER 
-
-            # Tốc độ truyền tải (Shannon) (bits/sec)
-            rate_i = BANDWIDTH * np.log2(1 + SINR_i)
             
+            SINR_i = (power_per_ue * H_sq) / NOISE_POWER 
+            
+            SINR_i_clipped = np.clip(SINR_i, 1e-12, None)
+            rate_i = BANDWIDTH * np.log2(1 + SINR_i_clipped)
             total_rate += rate_i
             
-            # Ràng buộc QoS
             if SINR_i < SINR_MIN_LINEAR:
-                penalty += 1.0 # Phạt cho mỗi UE vi phạm QoS
+                qos_violations += 1.0 
 
-        # 4. Reward: Tối đa hóa Rate (Mbps) và Giảm Penalty
-        # Chia 1e6 để reward nằm trong phạm vi dễ xử lý (Mbps)
-        # Hệ số phạt w_penalty = 1000 (Điều chỉnh để Agent quan tâm đến QoS)
-        w_penalty = 1000 
-        reward = (total_rate / 1e6) - w_penalty * penalty 
+            sinr_dbs.append(10 * np.log10(SINR_i_clipped))
         
-        # 5. Kết thúc Episode
+        # --- DEBUG THỰC TẾ (chỉ in khi bắt đầu học) ---
+        if self.time_step > 10000 and self.time_step % 500 == 0:
+            print(f"[DEBUG @ {self.time_step}]: SINR (dB) for UEs: {sinr_dbs}")
+            print(f"[DEBUG @ {self.time_step}]: QOS Violations: {qos_violations}")
+
+        # 4. Reward
+        w_penalty = 100 
+        reward = (total_rate / 1e6) - w_penalty * qos_violations 
+        
         terminated = False 
         truncated = (self.time_step >= MAX_STEPS_PER_EPISODE)
         
         observation = self._get_obs(self.sat_pos)
-        info = {"sum_rate_mbps": total_rate / 1e6, "qos_violations": penalty}
+        info = {"sum_rate_mbps": total_rate / 1e6, "qos_violations": qos_violations}
 
         return observation, reward, terminated, truncated, info
 

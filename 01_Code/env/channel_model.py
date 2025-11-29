@@ -14,8 +14,10 @@ def calculate_path_loss(distance):
     fspl = (4 * np.pi * distance * FREQUENCY / SPEED_OF_LIGHT)**2
     
     # 2. Atmospheric Absorption (Suy hao Khí quyển)
-    # Gamma (dB/km) xấp xỉ 0.5 dB/km @ 150 GHz
-    GAMMA_DB_PER_KM = 0.5
+    # Giảm GAMMA_DB_PER_KM xuống cực thấp (0.001 dB/km) để khắc phục lỗi 300 dB suy hao.
+    # Trong môi trường LEO, hấp thụ chủ yếu xảy ra ở lớp thấp (dưới 10km).
+    # Tuy nhiên, để mô hình hóa đơn giản, ta chỉ giảm hệ số này.
+    GAMMA_DB_PER_KM = 0.001 
     distance_km = distance / 1000
     
     absorption_loss_db = GAMMA_DB_PER_KM * distance_km
@@ -28,24 +30,18 @@ def calculate_path_loss(distance):
 def calculate_beam_gain(los_vector_norm, beam_direction):
     """
     Tính độ lợi ăng-ten (Tx) bằng mô hình Gaussian, phụ thuộc vào góc lệch.
-    los_vector_norm: Vector hướng từ Sat đến UE.
-    beam_direction: Vector hướng chùm tia do Agent quyết định.
     """
     
     # 1. Tính Góc Lệch (Offset Angle)
-    # Đảm bảo các vector là vector đơn vị
     offset_angle = np.arccos(np.clip(np.dot(los_vector_norm, beam_direction), -1.0, 1.0))
 
     # 2. Độ lợi Chùm tia (Gaussian Model)
-    # Độ lợi giảm khi góc lệch > độ rộng chùm tia
-    
-    # Normalized Gain (Gt/Gmax)
     normalized_gain = np.exp(- (offset_angle / BEAMWIDTH_3DB_RAD)**2 )
     
     # Total Gain (G_sat)
     G_sat_linear = G_MAX_LINEAR * normalized_gain
     
-    # Độ lợi ăng-ten Rx của UE (Giả định cố định, nhỏ)
+    # Độ lợi ăng-ten Rx của UE
     G_ue_linear = 10**(10/10) # 10 dBi
     
     return G_sat_linear * G_ue_linear
@@ -53,14 +49,12 @@ def calculate_beam_gain(los_vector_norm, beam_direction):
 def calculate_channel_gain(sat_pos, ue_pos, beam_direction):
     """Tổng hợp tất cả suy hao và độ lợi H^2."""
     
-    # Tính toán LOS vector và khoảng cách
     los_vector = ue_pos - sat_pos
     distance = np.linalg.norm(los_vector)
     los_vector_norm = los_vector / (distance + 1e-9)
 
     path_loss = calculate_path_loss(distance)
     
-    # Độ lợi ăng-ten tổng (Tx * Rx)
     antenna_gain = calculate_beam_gain(los_vector_norm, beam_direction)
     
     # Channel Gain H^2 = Antenna Gain / Path Loss
